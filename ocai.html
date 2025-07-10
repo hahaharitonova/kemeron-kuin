@@ -1,0 +1,422 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Опросник OCAI по Кэмерону-Квину</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/papaparse@5.3.2/papaparse.min.js"></script>
+    <style>
+        input[type=number]::-webkit-inner-spin-button,
+        input[type=number]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type=number] {
+            -moz-appearance: textfield;
+        }
+        .range-value {
+            min-width: 2.5rem;
+            text-align: right;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="container mx-auto p-6 max-w-4xl">
+        <h1 class="text-3xl font-bold text-center mb-6">Опросник OCAI по Кэмерону-Квину</h1>
+        <div class="flex justify-center space-x-4 mb-6">
+            <button id="showFormBtn" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Показать форму</button>
+            <button id="showResultsBtn" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Показать сводную таблицу</button>
+            <button id="exportCsvBtn" class="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600">Экспорт в CSV</button>
+        </div>
+
+        <!-- Форма опроса -->
+        <div id="surveyForm" class="space-y-6">
+            <p class="text-center mb-4">Распределите 100 баллов между четырьмя альтернативами для каждого вопроса с помощью ползунков. Сумма баллов для каждого вопроса должна равняться 100. Можно поставить 0 для любой альтернативы.</p>
+            <form id="ocaiForm" class="space-y-6">
+                <div id="questions" class="space-y-8"></div>
+                <div class="text-center">
+                    <button type="button" id="submitBtn" class="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600">Отправить</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Сводная таблица -->
+        <div id="summaryTable" class="hidden">
+            <h2 class="text-2xl font-bold mb-4">Сводная таблица результатов</h2>
+            <table class="w-full border-collapse bg-white rounded-lg shadow">
+                <thead>
+                    <tr>
+                        <th class="border p-2">Пользователь</th>
+                        <th class="border p-2">Время</th>
+                        <th class="border p-2">Клановая (Теперь)</th>
+                        <th class="border p-2">Адхократическая (Теперь)</th>
+                        <th class="border p-2">Иерархическая (Теперь)</th>
+                        <th class="border p-2">Рыночная (Теперь)</th>
+                        <th class="border p-2">Клановая (Через год)</th>
+                        <th class="border p-2">Адхократическая (Через год)</th>
+                        <th class="border p-2">Иерархическая (Через год)</th>
+                        <th class="border p-2">Рыночная (Через год)</th>
+                    </tr>
+                </thead>
+                <tbody id="summaryTableBody"></tbody>
+            </table>
+        </div>
+
+        <!-- Модальное окно для результатов -->
+        <div id="resultsModal" class="fixed inset-0 bg-gray-800 bg-opacity-50 hidden flex items-center justify-center">
+            <div class="bg-white p-6 rounded-lg max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+                <h2 class="text-2xl font-bold mb-4">Результаты опроса</h2>
+                <div id="resultsContent"></div>
+                <button id="closeModal" class="mt-4 bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const questions = [
+            {
+                title: "1. Доминирующие характеристики",
+                options: {
+                    A: "Организация похожа на большую семью, где люди разделяют общие ценности и цели.",
+                    B: "Организация динамична и предприимчива, поощряет инновации и риск.",
+                    C: "Организация формальна и структурирована, с четкими процедурами и правилами.",
+                    D: "Организация ориентирована на результаты, главная цель — достижение задач."
+                }
+            },
+            {
+                title: "2. Лидерство в организации",
+                options: {
+                    A: "Лидеры выступают в роли наставников и поддерживают сплоченность команды.",
+                    B: "Лидеры — новаторы и предприниматели, готовые брать на себя риск.",
+                    C: "Лидеры — организаторы и координаторы, поддерживающие порядок и эффективность.",
+                    D: "Лидеры ориентированы на достижение целей и высокую производительность."
+                }
+            },
+            {
+                title: "3. Управление сотрудниками",
+                options: {
+                    A: "Поощряется командная работа, участие и консенсус.",
+                    B: "Поощряется индивидуальная инициатива, свобода и креативность.",
+                    C: "Ценится стабильность, предсказуемость и четкое выполнение задач.",
+                    D: "Ценится высокая результативность и конкурентоспособность."
+                }
+            },
+            {
+                title: "4. Организационный клей",
+                options: {
+                    A: "Лояльность и традиции объединяют организацию.",
+                    B: "Приверженность инновациям и развитию объединяет организацию.",
+                    C: "Формальные правила и процедуры обеспечивают сплоченность.",
+                    D: "Ориентация на цели и достижения объединяет организацию."
+                }
+            },
+            {
+                title: "5. Стратегические акценты",
+                options: {
+                    A: "Фокус на человеческом развитии, доверии и открытости.",
+                    B: "Фокус на инновациях, экспериментах и новых возможностях.",
+                    C: "Фокус на стабильности, эффективности и контроле.",
+                    D: "Фокус на конкурентных действиях и достижении лидерства."
+                }
+            },
+            {
+                title: "6. Критерии успеха",
+                options: {
+                    A: "Успех определяется развитием персонала и заботой о людях.",
+                    B: "Успех определяется уникальностью продуктов и инновациями.",
+                    C: "Успех определяется надежностью, эффективностью и низкими затратами.",
+                    D: "Успех определяется лидерством на рынке и конкурентным преимуществом."
+                }
+            }
+        ];
+
+        const questionsContainer = document.getElementById('questions');
+
+        // Генерация HTML для вопросов с ползунками
+        questions.forEach((question, index) => {
+            const questionDiv = document.createElement('div');
+            questionDiv.className = 'bg-white p-6 rounded-lg shadow';
+            questionDiv.innerHTML = `
+                <h2 class="text-xl font-semibold mb-4">${question.title}</h2>
+                <table class="w-full border-collapse">
+                    <thead>
+                        <tr>
+                            <th class="border p-2">Альтернатива</th>
+                            <th class="border p-2">Описание</th>
+                            <th class="border p-2">Теперь</th>
+                            <th class="border p-2">Через год</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${Object.entries(question.options).map(([key, desc]) => `
+                            <tr>
+                                <td class="border p-2">${key}</td>
+                                <td class="border p-2">${desc}</td>
+                                <td class="border p-2">
+                                    <div class="flex items-center space-x-2">
+                                        <input type="range" min="0" max="100" value="0" class="w-full now" data-question="${index}" data-option="${key}">
+                                        <span class="range-value text-sm">0</span>
+                                    </div>
+                                </td>
+                                <td class="border p-2">
+                                    <div class="flex items-center space-x-2">
+                                        <input type="range" min="0" max="100" value="0" class="w-full future" data-question="${index}" data-option="${key}">
+                                        <span class="range-value text-sm">0</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+                <div class="mt-2">
+                    <p class="text-gray-600">Сумма (Теперь): <span id="sum-now-${index}" class="font-semibold">0</span></p>
+                    <p class="text-red-500 mt-1 hidden error" id="error-now-${index}">Сумма баллов для "Теперь" должна равняться 100</p>
+                    <p class="text-gray-600">Сумма (Через год): <span id="sum-future-${index}" class="font-semibold">0</span></p>
+                    <p class="text-red-500 mt-1 hidden error" id="error-future-${index}">Сумма баллов для "Через год" должна равняться 100</p>
+                </div>
+            `;
+            questionsContainer.appendChild(questionDiv);
+        });
+
+        // Обновление значений ползунков и суммы
+        function updateRangeValues() {
+            questions.forEach((_, index) => {
+                const nowInputs = document.querySelectorAll(`.now[data-question="${index}"]`);
+                const futureInputs = document.querySelectorAll(`.future[data-question="${index}"]`);
+                const nowSumDisplay = document.getElementById(`sum-now-${index}`);
+                const futureSumDisplay = document.getElementById(`sum-future-${index}`);
+                const nowError = document.getElementById(`error-now-${index}`);
+                const futureError = document.getElementById(`error-future-${index}`);
+
+                nowInputs.forEach(input => {
+                    const valueSpan = input.nextElementSibling;
+                    valueSpan.textContent = input.value;
+                    input.addEventListener('input', () => {
+                        valueSpan.textContent = input.value;
+                        const nowSum = Array.from(nowInputs).reduce((sum, inp) => sum + parseInt(inp.value), 0);
+                        nowSumDisplay.textContent = nowSum;
+                        nowSumDisplay.classList.toggle('text-red-500', nowSum !== 100);
+                        nowSumDisplay.classList.toggle('text-green-500', nowSum === 100);
+                        nowError.classList.toggle('hidden', nowSum === 100);
+                    });
+                });
+
+                futureInputs.forEach(input => {
+                    const valueSpan = input.nextElementSibling;
+                    valueSpan.textContent = input.value;
+                    input.addEventListener('input', () => {
+                        valueSpan.textContent = input.value;
+                        const futureSum = Array.from(futureInputs).reduce((sum, inp) => sum + parseInt(inp.value), 0);
+                        futureSumDisplay.textContent = futureSum;
+                        futureSumDisplay.classList.toggle('text-red-500', futureSum !== 100);
+                        futureSumDisplay.classList.toggle('text-green-500', futureSum === 100);
+                        futureError.classList.toggle('hidden', futureSum === 100);
+                    });
+                });
+            });
+        }
+
+        updateRangeValues();
+
+        const form = document.getElementById('ocaiForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const showFormBtn = document.getElementById('showFormBtn');
+        const showResultsBtn = document.getElementById('showResultsBtn');
+        const exportCsvBtn = document.getElementById('exportCsvBtn');
+        const resultsModal = document.getElementById('resultsModal');
+        const resultsContent = document.getElementById('resultsContent');
+        const closeModal = document.getElementById('closeModal');
+        const surveyForm = document.getElementById('surveyForm');
+        const summaryTable = document.getElementById('summaryTable');
+        const summaryTableBody = document.getElementById('summaryTableBody');
+
+        // Загрузка сохранённых результатов из localStorage
+        let savedResults = JSON.parse(localStorage.getItem('ocaiResults') || '[]');
+
+        // Отображение сводной таблицы
+        function renderSummaryTable() {
+            summaryTableBody.innerHTML = '';
+            savedResults.forEach((result, index) => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="border p-2">Пользователь ${index + 1}</td>
+                    <td class="border p-2">${result.timestamp}</td>
+                    <td class="border p-2">${result.now.Clan.toFixed(2)}</td>
+                    <td class="border p-2">${result.now.Adhocracy.toFixed(2)}</td>
+                    <td class="border p-2">${result.now.Hierarchy.toFixed(2)}</td>
+                    <td class="border p-2">${result.now.Market.toFixed(2)}</td>
+                    <td class="border p-2">${result.future.Clan.toFixed(2)}</td>
+                    <td class="border p-2">${result.future.Adhocracy.toFixed(2)}</td>
+                    <td class="border p-2">${result.future.Hierarchy.toFixed(2)}</td>
+                    <td class="border p-2">${result.future.Market.toFixed(2)}</td>
+                `;
+                summaryTableBody.appendChild(row);
+            });
+        }
+
+        // Экспорт в CSV
+        function exportToCsv() {
+            const csvData = savedResults.map((result, index) => ({
+                Пользователь: `Пользователь ${index + 1}`,
+                Время: result.timestamp,
+                'Клановая (Теперь)': result.now.Clan.toFixed(2),
+                'Адхократическая (Теперь)': result.now.Adhocracy.toFixed(2),
+                'Иерархическая (Теперь)': result.now.Hierarchy.toFixed(2),
+                'Рыночная (Теперь)': result.now.Market.toFixed(2),
+                'Клановая (Через год)': result.future.Clan.toFixed(2),
+                'Адхократическая (Через год)': result.future.Adhocracy.toFixed(2),
+                'Иерархическая (Через год)': result.future.Hierarchy.toFixed(2),
+                'Рыночная (Через год)': result.future.Market.toFixed(2)
+            }));
+            const csv = Papa.unparse(csvData, { delimiter: ',' });
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', 'ocai_results.csv');
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // Переключение между формой и таблицей
+        showFormBtn.addEventListener('click', () => {
+            surveyForm.classList.remove('hidden');
+            summaryTable.classList.add('hidden');
+        });
+
+        showResultsBtn.addEventListener('click', () => {
+            surveyForm.classList.add('hidden');
+            summaryTable.classList.remove('hidden');
+            renderSummaryTable();
+        });
+
+        exportCsvBtn.addEventListener('click', exportToCsv);
+
+        submitBtn.addEventListener('click', () => {
+            let isValid = true;
+            const results = {
+                now: Array(questions.length).fill().map(() => ({})),
+                future: Array(questions.length).fill().map(() => ({}))
+            };
+
+            // Проверка суммы баллов
+            questions.forEach((_, index) => {
+                const nowInputs = document.querySelectorAll(`.now[data-question="${index}"]`);
+                const futureInputs = document.querySelectorAll(`.future[data-question="${index}"]`);
+                const nowError = document.getElementById(`error-now-${index}`);
+                const futureError = document.getElementById(`error-future-${index}`);
+
+                const nowSum = Array.from(nowInputs).reduce((sum, input) => sum + parseInt(input.value), 0);
+                const futureSum = Array.from(futureInputs).reduce((sum, input) => sum + parseInt(input.value), 0);
+
+                nowError.classList.toggle('hidden', nowSum === 100);
+                futureError.classList.toggle('hidden', futureSum === 100);
+
+                if (nowSum !== 100 || futureSum !== 100) {
+                    isValid = false;
+                }
+
+                nowInputs.forEach(input => {
+                    results.now[index][input.dataset.option] = parseInt(input.value);
+                });
+                futureInputs.forEach(input => {
+                    results.future[index][input.dataset.option] = parseInt(input.value);
+                });
+            });
+
+            if (isValid) {
+                // Вычисление средних значений для культур
+                const cultureScores = {
+                    now: { Clan: 0, Adhocracy: 0, Hierarchy: 0, Market: 0 },
+                    future: { Clan: 0, Adhocracy: 0, Hierarchy: 0, Market: 0 }
+                };
+
+                results.now.forEach((question, i) => {
+                    cultureScores.now.Clan += question.A / questions.length;
+                    cultureScores.now.Adhocracy += question.B / questions.length;
+                    cultureScores.now.Hierarchy += question.C / questions.length;
+                    cultureScores.now.Market += question.D / questions.length;
+                });
+
+                results.future.forEach((question, i) => {
+                    cultureScores.future.Clan += question.A / questions.length;
+                    cultureScores.future.Adhocracy += question.B / questions.length;
+                    cultureScores.future.Hierarchy += question.C / questions.length;
+                    cultureScores.future.Market += question.D / questions.length;
+                });
+
+                // Сохранение результатов в localStorage
+                savedResults.push({
+                    timestamp: new Date().toLocaleString('ru-RU'),
+                    now: cultureScores.now,
+                    future: cultureScores.future
+                });
+                localStorage.setItem('ocaiResults', JSON.stringify(savedResults));
+
+                // Отображение результатов текущего пользователя
+                resultsContent.innerHTML = `
+                    <h3 class="text-lg font-semibold">Текущая организационная культура:</h3>
+                    <ul class="list-disc ml-6 mb-4">
+                        <li>Клановая культура: ${cultureScores.now.Clan.toFixed(2)}</li>
+                        <li>Адхократическая культура: ${cultureScores.now.Adhocracy.toFixed(2)}</li>
+                        <li>Иерархическая культура: ${cultureScores.now.Hierarchy.toFixed(2)}</li>
+                        <li>Рыночная культура: ${cultureScores.now.Market.toFixed(2)}</li>
+                    </ul>
+                    <h3 class="text-lg font-semibold">Желаемая культура через год:</h3>
+                    <ul class="list-disc ml-6">
+                        <li>Клановая культура: ${cultureScores.future.Clan.toFixed(2)}</li>
+                        <li>Адхократическая культура: ${cultureScores.future.Adhocracy.toFixed(2)}</li>
+                        <li>Иерархическая культура: ${cultureScores.future.Hierarchy.toFixed(2)}</li>
+                        <li>Рыночная культура: ${cultureScores.future.Market.toFixed(2)}</li>
+                    </ul>
+                `;
+                resultsModal.classList.remove('hidden');
+            }
+        });
+
+        closeModal.addEventListener('click', () => {
+            resultsModal.classList.add('hidden');
+        });
+    </script>
+</body>
+</html>
